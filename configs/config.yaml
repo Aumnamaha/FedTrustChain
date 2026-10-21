@@ -12,5 +12,5 @@ model:
 paths:
   dataset_dir: "/home/aumnamaha/Documents/Proj/Capstone Proj/Datasets"
   wustl_ehms: "/home/aumnamaha/Documents/Proj/Capstone Proj/Datasets/wustl-ehms-2020_with_attacks_categories.csv"
-  ciciot23: "/home/aumnamaha/Documents/Proj/Capstone Proj/Datasets/CICIOT23/train.csv"
+  ciciot23: "/home/aumnamaha/Documents/Proj/Capstone Proj/Datasets/CICIOT23/train/train.csv"
   nf_ton_iot: "/home/aumnamaha/Documents/Proj/Capstone Proj/Datasets/NF-ToN-IoT.parquet"
