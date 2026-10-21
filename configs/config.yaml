@@ -4,6 +4,7 @@ server:
   min_clients: 2
   num_rounds: 1
 
+algorithm: "RandomForestClassifier"
 model:
   n_estimators_per_client: 50
   max_depth: 15

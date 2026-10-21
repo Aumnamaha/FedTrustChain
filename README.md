@@ -199,17 +199,17 @@ Configuration: `min_clients=2`, `n_estimators_per_client=50`, `max_depth=15`, `r
 
 | Dataset | Samples | Clients | Total Trees | Accuracy | Weighted F1-Score | Precision | Recall | Time (s) |
 |---|---|---|---|---|---|---|---|---|
-| **WUSTL-EHMS-2020** | 13,054 | 2 | 100 | 94.06% | 93.28% | 94.31% | 94.06% | 0.48 |
-| **NF-ToN-IoT** | 926,395 | 2 | 100 | 68.91% | 59.99% | 55.63% | 68.91% | 36.06 |
-| **CICIOT23** | ~4.4M | 2 | 100 | — | — | — | — | Timeout* |
+| **WUSTL-EHMS-2020** | 13,054 | 2 | 100 | 94.06% | 93.28% | 94.31% | 94.06% | 0.47 |
+| **CICIOT23** | 320,000* | 2 | 100 | 98.93% | 98.82% | 98.89% | 98.93% | 73.35 |
+| **NF-ToN-IoT** | 926,395 | 2 | 100 | 68.91% | 59.99% | 55.63% | 68.91% | 28.31 |
 
-> \* CICIOT23 (~9M rows, 46 features) requires extended timeout (>300s per round) and ≥16 GB RAM due to large model serialization payloads (~90 MB/client). For production runs, increase the client thread join timeout in `scripts/benchmark_all.py` or reduce `n_estimators_per_client`.
+> \* CICIOT23: Original dataset has ~5.5M rows; stratified downsampling to 400K total (per `max_samples=400000` in `scripts/benchmark_all.py`) was applied for memory-stable training and fast socket serialization (~25 MB/client vs ~90 MB). Each client received ~160K samples.
 
 ### Observations
 
-- **WUSTL-EHMS-2020**: Highest accuracy (94.1%) — clean healthcare network traffic with well-separated attack classes
-- **NF-ToN-IoT**: Moderate performance (68.9% acc) — large-scale IoT dataset with high class imbalance and diverse attack vectors
-- **CICIOT23**: Requires resource scaling — the CIC suite's breadth of attack types (~70+ categories) demands deeper trees or ensemble boosting for competitive F1 scores
+- **CICIOT23**: Highest accuracy (98.9%) — stratified downsample to 400K preserved class distribution; the CIC suite's well-labeled traffic patterns yield excellent RF separation across attack categories
+- **WUSTL-EHMS-2020**: Strong performance (94.1%) — clean healthcare network traffic with well-separated benign vs. attack classes; fastest benchmark at 0.47s total
+- **NF-ToN-IoT**: Moderate performance (68.9% acc, 59.99% F1) — large-scale IoT dataset (~926K samples) with high class imbalance and diverse attack vectors reduces per-tree discriminative power; precision-recall gap indicates conservative classification bias
 
 ---
 

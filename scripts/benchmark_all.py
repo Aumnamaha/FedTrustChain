@@ -93,8 +93,14 @@ def _run_benchmark_round(
 
     # --- load & preprocess ---------------------------------------------
     loader = IoTDatasetLoader(config_path=os.path.join(PROJECT_ROOT, "configs/config.yaml"))
+    # Apply stratified downsampling for ultra-large datasets
+    is_ciciot = "ciciot" in data_path.lower()
+    max_samples = 400_000 if is_ciciot else None
+
     X_train, X_test, y_train, y_test, scaler = loader.load_and_preprocess(
-        dataset_path_or_key=data_path, test_size=0.2
+        dataset_path_or_key=data_path,
+        test_size=0.2,
+        max_samples=max_samples,
     )
 
     logger.info("Dataset '%s': %d train samples (%d features), %d test",
@@ -157,9 +163,9 @@ def _run_benchmark_round(
     for t in client_threads:
         t.start()
     for t in client_threads:
-        t.join(timeout=120)  # generous timeout per dataset
+        t.join(timeout=600)  # extended timeout for large datasets (e.g. CICIOT23)
 
-    srv_thread.join(timeout=30)
+    srv_thread.join(timeout=120)
 
     elapsed = time.time() - round_start
 
