@@ -1,0 +1,23 @@
+# Python bytecode and cache
+__pycache__/
+*.pyc
+
+# Virtual environment
+.venv/
+
+# Environment variables
+.env
+
+# IDE settings
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Data files (keep raw datasets out of git)
+data/*.csv
+data/*.parquet
+
+# Results/output directory
+results/

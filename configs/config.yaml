@@ -1,0 +1,16 @@
+server:
+  host: "127.0.0.1"
+  port: 5000
+  min_clients: 2
+  num_rounds: 1
+
+model:
+  n_estimators_per_client: 50
+  max_depth: 15
+  random_state: 42
+
+paths:
+  dataset_dir: "/home/aumnamaha/Documents/Proj/Capstone Proj/Datasets"
+  wustl_ehms: "/home/aumnamaha/Documents/Proj/Capstone Proj/Datasets/wustl-ehms-2020_with_attacks_categories.csv"
+  ciciot23: "/home/aumnamaha/Documents/Proj/Capstone Proj/Datasets/CICIOT23/train.csv"
+  nf_ton_iot: "/home/aumnamaha/Documents/Proj/Capstone Proj/Datasets/NF-ToN-IoT.parquet"
