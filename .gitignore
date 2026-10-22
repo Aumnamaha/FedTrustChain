@@ -16,6 +16,7 @@ __pycache__/
 *.log
 
 # Data files (keep raw datasets out of git)
+data/Datasets/
 data/*.csv
 data/*.parquet
 

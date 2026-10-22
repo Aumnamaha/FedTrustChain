@@ -200,14 +200,14 @@ Configuration: `min_clients=2`, `n_estimators_per_client=50`, `max_depth=15`, `r
 | Dataset | Samples | Clients | Total Trees | Accuracy | Weighted F1-Score | Precision | Recall | Time (s) |
 |---|---|---|---|---|---|---|---|---|
 | **WUSTL-EHMS-2020** | 13,054 | 2 | 100 | 94.06% | 93.28% | 94.31% | 94.06% | 0.47 |
-| **CICIOT23** | 320,000* | 2 | 100 | 98.93% | 98.82% | 98.89% | 98.93% | 73.35 |
-| **NF-ToN-IoT** | 926,395 | 2 | 100 | 68.91% | 59.99% | 55.63% | 68.91% | 28.31 |
+| **CICIOT23** | 240,000* | 2 | 100 | 98.90% | 98.79% | 98.85% | 98.90% | 57.10 |
+| **NF-ToN-IoT** | 926,395 | 2 | 100 | 68.91% | 59.99% | 55.63% | 68.91% | 28.14 |
 
-> \* CICIOT23: Original dataset has ~5.5M rows; stratified downsampling to 400K total (per `max_samples=400000` in `scripts/benchmark_all.py`) was applied for memory-stable training and fast socket serialization (~25 MB/client vs ~90 MB). Each client received ~160K samples.
+> \* CICIOT23: Original dataset has ~5.5M rows; stratified downsampling to 300K total (per `max_samples=300000` in `scripts/benchmark_all.py`) was applied for memory-stable training and fast socket serialization (~12 MB/client). Each client received ~120K samples.
 
 ### Observations
 
-- **CICIOT23**: Highest accuracy (98.9%) — stratified downsample to 400K preserved class distribution; the CIC suite's well-labeled traffic patterns yield excellent RF separation across attack categories
+- **CICIOT23**: Highest accuracy (98.9%) — stratified downsample to 300K preserved class distribution; the CIC suite's well-labeled traffic patterns yield excellent RF separation across attack categories
 - **WUSTL-EHMS-2020**: Strong performance (94.1%) — clean healthcare network traffic with well-separated benign vs. attack classes; fastest benchmark at 0.47s total
 - **NF-ToN-IoT**: Moderate performance (68.9% acc, 59.99% F1) — large-scale IoT dataset (~926K samples) with high class imbalance and diverse attack vectors reduces per-tree discriminative power; precision-recall gap indicates conservative classification bias
 
