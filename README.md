@@ -63,6 +63,88 @@ This guarantees atomic delivery regardless of network packet boundaries.
 
 ---
 
+## Architecture Breakdown & Technical Conceptual Guide
+
+### Server Role: Federated Orchestrator and Model Aggregator
+
+The server **does not train on raw data**. Its responsibilities are:
+
+1. **Bind a TCP socket** on a configurable host/port (default `127.0.0.1:5050`).
+2. **Receive serialized models** from each participating client — one at a time, in the order they connect.
+3. **Aggregate received estimators** into a single global forest using estimator union fusion (`aggregate_rf_models`), which extracts every `estimator_` (individual decision tree) from each client's `RandomForestClassifier` and concatenates them into one large ensemble.
+4. **Evaluate the aggregated model** against a holdout test dataset to compute accuracy, F1-score, precision, and recall.
+5. **Return** both the global model object and a metrics dictionary to the caller.
+
+The server is stateless between rounds — it starts fresh each time `start()` is called.
+
+### Client Role: Local Edge Trainer
+
+Each client node operates independently on its private data slice:
+
+1. **Load local training data** `(X_train, y_train)` from a local dataset file (CSV or Parquet).
+2. **Partition the full dataset** into `num_clients` equal contiguous chunks using stratified chunking — each client receives one chunk.
+3. **Train a `RandomForestClassifier`** strictly on its assigned chunk (default: 50 trees, max depth 15).
+4. **Serialize the fitted model** via `pickle.dumps()` into a byte payload (~20 MB for 50 trees × 36 features).
+5. **Stream the payload over TCP** using length-prefixed framing — sends the 4-byte length header first, then the raw bytes.
+6. **Return** the fitted local model to the caller.
+
+Clients never communicate with each other; all communication flows through the central server.
+
+### Data Privacy & Zero-Trust Boundary
+
+```
+┌───────────────────────────────────────────────────────┐
+│                   TRUSTED ZONE                        │
+│  (Federated Server — aggregation, evaluation)         │
+│                                                       │
+│  Receives: serialized tree estimators only            │
+│  Never sees: raw data samples, feature values,        │
+│              labels, or network traffic logs           │
+└───────────────▲──────────────────▲────────────────────┘
+                │ encrypted TCP    │ encrypted TCP
+                ▼                  ▼
+┌───────────────┴──────────┐ ┌────┴──────────────────────┐
+│   Client Node 0          │ │   Client Node K-1         │
+│                          │ │                           │
+│  Raw data stays here     │ │  Raw data stays here      │
+│  Only model params leave │ │  Only model params leave  │
+└──────────────────────────┘ └───────────────────────────┘
+```
+
+**Key invariant:** Raw dataset logs never leave edge devices. The only artifacts transmitted across the wire are decision tree estimator objects — internal node split thresholds, feature indices, and leaf values. These reveal no individual training samples.
+
+### Tree Estimator Union Aggregation
+
+Unlike gradient-based FL (FedAvg), which averages model weights, tree ensembles cannot be averaged element-wise. FedTrustChain uses a **bag-of-trees** aggregation strategy:
+
+$$F_{\text{global}} = \bigcup_{i=1}^{K} T_i$$
+
+where:
+- $K$ is the number of participating client nodes.
+- $T_i$ represents the set of 50 decision tree estimators trained by client $i$.
+- The union operator `∪` concatenates all individual trees into a single `RandomForestClassifier` with $50 \times K$ total estimators.
+
+The resulting global forest retains the predictive power of every client's private dataset while never requiring raw samples to leave their local nodes. Inference on $F_{\text{global}}$ uses majority voting across all trees (both local and aggregated).
+
+### Global Metric Evaluation Formulas
+
+After aggregation, the server evaluates $F_{\text{global}}$ against a held-out test set:
+
+**Prediction:**
+$$\hat{y}_{\text{pred}} = F_{\text{global}}.\text{predict}(X_{\text{test}})$$
+
+**Global Accuracy:**
+$$\text{Accuracy} = \frac{\text{Correct Predictions}}{\text{Total Test Samples}} = \frac{1}{N}\sum_{j=1}^{N} \mathbb{I}(\hat{y}_j = y_j)$$
+
+where $N$ is the number of test samples and $\mathbb{I}$ is the indicator function.
+
+**Weighted F1-Score (per-class averaged across all classes):**
+$$F1_{\text{weighted}} = \sum_{c=1}^{C} w_c \cdot \frac{2 \cdot \text{precision}_c \cdot \text{recall}_c}{\text{precision}_c + \text{recall}_c}$$
+
+where $w_c$ is the support (proportion of samples) for class $c$, and $C$ is the total number of classes.
+
+---
+
 ## Directory Structure
 
 ```
@@ -189,6 +271,111 @@ This script:
 ```bash
 cat results/benchmark_summary.json | python -m json.tool
 ```
+
+---
+
+## Quick Interactive Tutorial (Multi-Terminal Live Demonstration)
+
+Follow these exact steps to run a live federated learning round across four terminal windows. This demonstrates the full client-server pipeline end-to-end using the WUSTL-EHMS-2020 dataset.
+
+> **Prerequisites:** Virtual environment activated (`source .venv/bin/activate`) and all dependencies installed via `pip install -r requirements.txt`.
+
+### Step 1: Open Four Terminal Windows
+
+---
+
+### Terminal 1 — Server Orchestrator (Start First)
+
+This terminal launches the federated server, which binds to port `5005` and waits for client connections:
+
+```bash
+python -c "
+from data.dataset_loader import IoTDatasetLoader
+from src.server.server_node import FederatedServer
+
+loader = IoTDatasetLoader('data/Datasets')
+X_tr, X_te, y_tr, y_te, _ = loader.load_and_preprocess('wustl_ehms')
+
+server = FederatedServer('127.0.0.1', 5005, min_clients=2)
+model, metrics = server.start(X_te, y_te)
+print('\nGlobal Model Metrics:', metrics)
+"
+```
+
+The server will print `Waiting for client models...` and block until both clients connect.
+
+---
+
+### Terminal 2 — Client Node 0 (Start Second)
+
+This terminal trains a local Random Forest on the first partition of training data:
+
+```bash
+python -c "
+from data.dataset_loader import IoTDatasetLoader
+from src.client.client_node import FederatedClient
+
+loader = IoTDatasetLoader('data/Datasets')
+X_tr, X_te, y_tr, y_te, _ = loader.load_and_preprocess('wustl_ehms')
+parts = loader.partition_for_clients(X_tr, y_tr, 2)
+
+client = FederatedClient(client_id=0, server_host='127.0.0.1', server_port=5005)
+model = client.train_and_send(parts[0][0], parts[0][1])
+print(f'Client {client.client_id} sent model with {model.n_estimators} trees')
+"
+```
+
+---
+
+### Terminal 3 — Client Node 1 (Start Third)
+
+This terminal trains a local Random Forest on the second partition of training data:
+
+```bash
+python -c "
+from data.dataset_loader import IoTDatasetLoader
+from src.client.client_node import FederatedClient
+
+loader = IoTDatasetLoader('data/Datasets')
+X_tr, X_te, y_tr, y_te, _ = loader.load_and_preprocess('wustl_ehms')
+parts = loader.partition_for_clients(X_tr, y_tr, 2)
+
+client = FederatedClient(client_id=1, server_host='127.0.0.1', server_port=5005)
+model = client.train_and_send(parts[1][0], parts[1][1])
+print(f'Client {client.client_id} sent model with {model.n_estimators} trees')
+"
+```
+
+---
+
+### Expected Output Sequence
+
+1. **Terminal 1** prints `Starting server on 127.0.0.1:5005 (min_clients=2)` and waits.
+2. **Terminal 2** connects, trains ~50 trees (~3 seconds), sends the pickle payload, then exits.
+3. **Terminal 3** connects, trains ~50 trees (~3 seconds), sends the pickle payload, then exits.
+4. **Terminal 1** receives both models, aggregates them into a global forest of 100 trees, evaluates on `X_test`, and prints:
+
+```
+Received model from client 1 (n_estimators=50)
+Received model from client 2 (n_estimators=50)
+Aggregating 2 client models ...
+Global model: 100 total trees
+
+Global Model Metrics: {'accuracy': 0.9406, 'f1_score': 0.9328, 'precision': 0.9431, 'recall': 0.9406}
+```
+
+---
+
+### Terminal 4 — Automated Test Verification
+
+In a separate terminal (or after stopping the server), run the full test suite:
+
+```bash
+cd /home/aumnamaha/Documents/Proj/Capstone\ Proj/FedTrustChain
+python -m unittest discover -s tests -p "test_*.py" -v
+```
+
+Expected output: **20 tests, all passing**.
 
 ---
 
