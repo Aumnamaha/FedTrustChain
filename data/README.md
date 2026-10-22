@@ -46,7 +46,7 @@ data/
 | **Format** | CSV (~3.9 MB on disk; ~13K rows after preprocessing) |
 | **Features** | 36 numeric features + target label column |
 | **Domain** | Healthcare IoT network traffic — benign vs. attack (DoS, Probe, R2L, U2R) classification |
-| **Source** | [WUSTL-EHMS-2020 Dataset](https://github.com/WUSTLEHMS/EHMS-2020-Dataset) |
+| **Source** | [Kaggle: WUSTL-EHMS-2020 Dataset](https://www.kaggle.com/datasets/aghubaish/wustl-ehms-2020-dataset) |
 
 ### 2. CICIOT23 (Modern Cyber-Attack Telemetry)
 
@@ -56,7 +56,7 @@ data/
 | **Format** | CSV (~1.6 GB on disk; ~5.5M rows, downsampled to 300K for benchmarks) |
 | **Features** | 46 numeric features + target label column |
 | **Domain** | CIC (Canadian Institute for Cybersecurity) IoT attack dataset — comprehensive telemetry with 70+ attack categories including Botnet, DDoS, Brute Force, and Malware traffic |
-| **Source** | [CIC-IoT-2023 Dataset](https://www.unb.ca/cic/datasets/iot-2023.html) |
+| **Source** | [Kaggle: CICIOT2023 Dataset](https://www.kaggle.com/datasets/himadri07/ciciot2023) |
 
 ### 3. NF-ToN-IoT (Network Flow Telemetry for IoT)
 
@@ -66,7 +66,7 @@ data/
 | **Format** | Apache Parquet (~9.5 MB on disk; ~926K rows, no downsampling applied) |
 | **Features** | 11 numeric features + target label column |
 | **Domain** | Network flow-level IoT telemetry — captures normal and attack traffic across diverse IoT device types (cameras, routers, smart speakers, etc.) |
-| **Source** | [NF-ToN-IoT Dataset](https://www.unb.ca/cic/datasets/toniot.html) |
+| **Source** | [Kaggle: NF-ToN-IoT Dataset](https://www.kaggle.com/datasets/dhoogla/nftoniot) |
 
 ---
 
@@ -83,20 +83,44 @@ ls -la data/Datasets/
 
 ### Step 2: Download Datasets into `data/Datasets/` ONLY
 
-Place each file with the **exact filename** listed below. Do not place datasets anywhere else.
+All datasets are hosted on Kaggle. You need a free [Kaggle account](https://www.kaggle.com/account/login) to download them.
+
+#### Option A — Browser Download (Recommended)
+
+1. Open each dataset page below and click **Download**:
+   - [WUSTL-EHMS-2020 Dataset](https://www.kaggle.com/datasets/aghubaish/wustl-ehms-2020-dataset)
+   - [CICIOT2023 Dataset](https://www.kaggle.com/datasets/himadri07/ciciot2023)
+   - [NF-ToN-IoT Dataset](https://www.kaggle.com/datasets/dhoogla/nftoniot)
+2. Extract the downloaded ZIP archives.
+3. Place each file into `data/Datasets/` with the **exact filename** listed below:
+
+| Expected filename | Source archive (may vary) |
+|---|---|
+| `wustl-ehms-2020_with_attacks_categories.csv` | WUSTL-EHMS-2020 ZIP → CSV file |
+| `train.csv` | CICIOT2023 ZIP → training split CSV |
+| `NF-ToN-IoT.parquet` | NF-ToN-IoT ZIP → Parquet file |
+
+#### Option B — Kaggle CLI (for automation)
 
 ```bash
-# --- WUSTL-EHMS-2020 ---
-wget -O data/Datasets/wustl-ehms-2020_with_attacks_categories.csv \
-  "https://raw.githubusercontent.com/WUSTLEHMS/EHMS-2020-Dataset/main/wustl-ehms-2020_with_attacks_categories.csv"
+# Install the Kaggle CLI first:
+pip install kagglehub
+cd /home/aumnamaha/Documents/Proj/Capstone\ Proj/FedTrustChain/data/Datasets
 
-# --- CICIOT23 (training split) ---
-# Download from CIC website → rename to train.csv:
-mv ~/Downloads/train.csv data/Datasets/train.csv   # adjust path as needed
+# --- WUSTL-EHMS-2020 ---
+kaggle datasets download -d aghubaish/wustl-ehms-2020-dataset -p .
+unzip *.zip && rm *.zip
+mv wustl-ehms-2020_with_attacks_categories.csv ./wustl-ehms-2020_with_attacks_categories.csv  # rename if needed
+
+# --- CICIOT2023 ---
+kaggle datasets download -d himadri07/ciciot2023 -p .
+unzip *.zip && rm *.zip
+mv train.csv ./train.csv   # ensure correct filename in Datasets/
 
 # --- NF-ToN-IoT ---
-wget -O data/Datasets/NF-ToN-IoT.parquet \
-  "https://raw.githubusercontent.com/WUSTLEHMS/EHMS-2020-Dataset/main/NF-ToN-IoT.parquet"
+kaggle datasets download -d hoogla/nftoniot -p .
+unzip *.zip && rm *.zip
+mv NF-ToN-IoT.parquet ./NF-ToN-IoT.parquet   # ensure correct filename in Datasets/
 ```
 
 ### Step 3: Verify Placement
