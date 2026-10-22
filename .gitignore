@@ -16,7 +16,9 @@ __pycache__/
 *.log
 
 # Data files (keep raw datasets out of git)
-data/Datasets/
+# Allow only .gitkeep placeholder; everything else in Datasets/ is ignored
+!data/Datasets/.gitkeep
+data/Datasets/*
 data/*.csv
 data/*.parquet
 

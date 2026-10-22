@@ -2,7 +2,11 @@
 
 ## Overview
 
-This directory contains the `dataset_loader.py` module and serves as the home for local dataset storage under `data/Datasets/`. **The `Datasets/` subdirectory is intentionally excluded from Git tracking** (see `.gitignore`) because the raw CSV and Parquet files are large (up to ~1.6 GB each) and should not be committed to the repository.
+This directory contains the `dataset_loader.py` module and serves as the home for local dataset storage under **`data/Datasets/`**. 
+
+> ⚠️ **ALL raw CSV and Parquet files MUST be placed exclusively inside `data/Datasets/`.** No other location is supported. The codebase (via `configs/config.yaml`) resolves all dataset paths relative to this directory.
+
+The entire `Datasets/` subdirectory (except `.gitkeep`) is excluded from Git tracking via `.gitignore` because these files are large and should never be committed to the repository.
 
 ---
 
@@ -10,15 +14,25 @@ This directory contains the `dataset_loader.py` module and serves as the home fo
 
 ```
 data/
-├── Datasets/                     # ← LOCAL ONLY (ignored by Git via .gitignore)
+├── Datasets/                     # ← PLACE ALL DATASETS HERE ONLY
+│   ├── .gitkeep                  # Git placeholder (ensures folder exists on clone)
+│   │                             # ⚠️ DO NOT DELETE — keeps the directory tracked by Git
 │   ├── wustl-ehms-2020_with_attacks_categories.csv    # WUSTL-EHMS-2020 dataset
 │   ├── train.csv                # CICIOT23 dataset (training split)
 │   └── NF-ToN-IoT.parquet       # NF-ToN-IoT dataset (Parquet format)
+├── __init__.py                  # Python package marker
 ├── dataset_loader.py            # Multi-format loader, preprocessor & client partitioner
-└── README.md                    # This file — dataset placement instructions
+└── README.md                    # This file — placement instructions & setup guide
 ```
 
-> **Important:** `data/Datasets/` must be populated locally before running any benchmark or training script. The directory is tracked in `.gitignore` so no heavy binary files are pushed to GitHub.
+### Placement Rules
+
+| Rule | Detail |
+|---|---|
+| **Only one location** | All datasets go in `data/Datasets/` — nowhere else |
+| **Exact filenames** | Filenames must match exactly (case-sensitive on Linux) |
+| **No subdirectories** | Do not create nested folders inside `Datasets/` |
+| **.gitkeep is required** | Never delete `.gitkeep` — it ensures the folder appears on GitHub after cloning |
 
 ---
 
@@ -58,20 +72,26 @@ data/
 
 ## Setup Instructions
 
-### Step 1: Download the Datasets
-
-Place each file into `data/Datasets/` with the exact filename listed above:
+### Step 1: Clone the Repository and Create `Datasets/` Folder
 
 ```bash
-# Create the local dataset directory (if not already present)
-mkdir -p data/Datasets
+git clone https://github.com/Aumnamaha/FedTrustChain.git
+cd FedTrustChain
+# The data/Datasets/ folder already exists with .gitkeep placeholder
+ls -la data/Datasets/
+```
 
+### Step 2: Download Datasets into `data/Datasets/` ONLY
+
+Place each file with the **exact filename** listed below. Do not place datasets anywhere else.
+
+```bash
 # --- WUSTL-EHMS-2020 ---
 wget -O data/Datasets/wustl-ehms-2020_with_attacks_categories.csv \
   "https://raw.githubusercontent.com/WUSTLEHMS/EHMS-2020-Dataset/main/wustl-ehms-2020_with_attacks_categories.csv"
 
 # --- CICIOT23 (training split) ---
-# Download from CIC website and place as train.csv:
+# Download from CIC website → rename to train.csv:
 mv ~/Downloads/train.csv data/Datasets/train.csv   # adjust path as needed
 
 # --- NF-ToN-IoT ---
@@ -79,19 +99,18 @@ wget -O data/Datasets/NF-ToN-IoT.parquet \
   "https://raw.githubusercontent.com/WUSTLEHMS/EHMS-2020-Dataset/main/NF-ToN-IoT.parquet"
 ```
 
-> **Note:** If the raw download URLs above are unavailable, download directly from the dataset source links in the table and rename/move files to match the expected names.
-
-### Step 2: Verify Placement
+### Step 3: Verify Placement
 
 ```bash
 ls -lh data/Datasets/
-# Expected output:
-# wustl-ehms-2020_with_attacks_categories.csv   (3.9 MB)
-# train.csv                                    (~1.6 GB for CICIOT23)
-# NF-ToN-IoT.parquet                           (9.5 MB)
+# Expected output (only .gitkeep + 3 dataset files):
+# -rw-r--r-- 1 user user    0 Oct 22 .gitkeep
+# -rw-r--r-- 1 user user 3.9M ... wustl-ehms-2020_with_attacks_categories.csv
+# -rw-r--r-- 1 user user  1.6G ... train.csv
+# -rw-r--r-- 1 user user 9.5M ... NF-ToN-IoT.parquet
 ```
 
-### Step 3: Run Benchmarks
+### Step 4: Run Benchmarks
 
 ```bash
 python scripts/benchmark_all.py
@@ -121,12 +140,12 @@ The `IoTDatasetLoader` class resolves these paths at runtime and validates file 
 
 | Reason | Detail |
 |---|---|
-| **Size** | CICIOT23 alone is ~1.6 GB; the total dataset footprint exceeds 5 GB |
+| **Size** | CICIOT23 alone is ~1.6 GB; total footprint exceeds 5 GB |
 | **Immutability** | Raw datasets are reference data — they should not change between commits |
 | **Reproducibility** | Download links and file names in this README ensure anyone can recreate the local setup |
 | **GitHub limits** | GitHub has a 100 MB per-file soft limit; committing these files would break CI/CD workflows |
 
-The `.gitignore` entry `data/Datasets/` ensures no CSV, Parquet, or other binary dataset files are ever accidentally staged or pushed to the remote repository.
+The `.gitignore` entry `data/Datasets/*` (with `!data/Datasets/.gitkeep` exception) ensures only the placeholder directory structure is tracked — no heavy binary files are ever pushed to GitHub.
 
 ---
 
@@ -135,9 +154,9 @@ The `.gitignore` entry `data/Datasets/` ensures no CSV, Parquet, or other binary
 ### "Dataset not found" error
 
 If you see `FileNotFoundError: Dataset not found`, verify:
-1. The file exists at the path specified in `configs/config.yaml`
+1. The file exists **inside `data/Datasets/`** with the exact filename from this README
 2. The filename matches exactly (case-sensitive on Linux)
-3. You have read permissions on the file (`chmod +r data/Datasets/train.csv`)
+3. You have read permissions (`chmod +r data/Datasets/train.csv`)
 
 ### Out of Memory during CICIOT23 benchmark
 
