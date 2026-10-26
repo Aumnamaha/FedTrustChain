@@ -30,7 +30,7 @@ data/
 | Rule | Detail |
 |---|---|
 | **Only one location** | All datasets go in `data/Datasets/` — nowhere else |
-| **Exact filenames** | Filenames must match exactly (case-sensitive on Linux) |
+| **Exact filenames** | Filenames must match exactly on Linux/macOS. On Windows the filesystem is case-insensitive, but keep exact casing for cross-platform compatibility when sharing code or datasets between OSes.
 | **No subdirectories** | Do not create nested folders inside `Datasets/` |
 | **.gitkeep is required** | Never delete `.gitkeep` — it ensures the folder appears on GitHub after cloning |
 

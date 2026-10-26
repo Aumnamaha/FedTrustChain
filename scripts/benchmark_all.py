@@ -198,6 +198,19 @@ def _run_benchmark_round(
 
 
 # ------------------------------------------------------------------
+def _resolve_path(path_str: str | None, base_dir: str) -> str | None:
+    """Resolve a (possibly relative) path against *base_dir*.
+
+    Returns ``None`` unchanged; otherwise returns an absolute path using
+    the platform-native separator (os.path.join handles this).
+    """
+    if path_str is None:
+        return None
+    if os.path.isabs(path_str):
+        return path_str
+    return os.path.join(base_dir, path_str)
+
+
 def _print_table(results: List[Dict[str, Any]]) -> None:
     """Print a formatted ASCII summary table of all benchmark results."""
     sep = "-" * 96
@@ -248,10 +261,21 @@ def main():
     max_depth = model_cfg.get("max_depth", 15)
     random_state = model_cfg.get("random_state", 42)
 
+    # Resolve relative dataset paths against PROJECT_ROOT so the script
+    # works regardless of the current working directory (Windows, Linux, etc.).
     dataset_configs = [
-        {"name": "wustl_ehms", "path": paths_cfg.get("wustl_ehms")},
-        {"name": "ciciot23",   "path": paths_cfg.get("ciciot23")},
-        {"name": "nf_ton_iot", "path": paths_cfg.get("nf_ton_iot")},
+        {
+            "name": "wustl_ehms",
+            "path": _resolve_path(paths_cfg.get("wustl_ehms"), PROJECT_ROOT),
+        },
+        {
+            "name": "ciciot23",
+            "path": _resolve_path(paths_cfg.get("ciciot23"), PROJECT_ROOT),
+        },
+        {
+            "name": "nf_ton_iot",
+            "path": _resolve_path(paths_cfg.get("nf_ton_iot"), PROJECT_ROOT),
+        },
     ]
 
     # --- run benchmarks ------------------------------------------------
@@ -276,7 +300,8 @@ def main():
             print(f"[ERROR] Benchmark failed for '{ds['name']}': {exc}")
 
     # --- export results ------------------------------------------------
-    os.makedirs("results", exist_ok=True)
+    results_dir = os.path.join(PROJECT_ROOT, "results")
+    os.makedirs(results_dir, exist_ok=True)
     output = {
         "timestamp": datetime.now().isoformat(),
         "config": {
@@ -288,7 +313,7 @@ def main():
         "results": results,
     }
 
-    output_path = os.path.join("results", "benchmark_summary.json")
+    output_path = os.path.join(results_dir, "benchmark_summary.json")
     with open(output_path, "w") as f:
         json.dump(output, f, indent=2)
     print(f"\nResults saved to {output_path}")

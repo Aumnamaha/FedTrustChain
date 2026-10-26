@@ -22,15 +22,22 @@ class IoTDatasetLoader:
     def __init__(self, dataset_dir: str = None, config_path: str = "configs/config.yaml"):
         self.dataset_dir = dataset_dir
         self._config_paths: Dict[str, str] = {}
-        if os.path.isfile(config_path):
+        # Resolve the config file path to an absolute path so relative
+        # dataset paths can be resolved against its directory.
+        abs_config_path = os.path.abspath(config_path)
+        if os.path.isfile(abs_config_path):
             try:
                 import yaml  # noqa: F811
-                with open(config_path, "r") as f:
+                with open(abs_config_path, "r") as f:
                     cfg = yaml.safe_load(f)
                 if cfg and "paths" in cfg:
+                    config_dir = os.path.dirname(abs_config_path)
                     for key, val in cfg["paths"].items():
-                        if isinstance(val, str) and os.path.isfile(val):
-                            self._config_paths[key] = val
+                        if isinstance(val, str):
+                            # Resolve relative paths against the config file's directory
+                            candidate = os.path.join(config_dir, val) if not os.path.isabs(val) else val
+                            if os.path.isfile(candidate):
+                                self._config_paths[key] = candidate
             except ImportError:
                 pass  # pyyaml not available; rely on explicit paths
 

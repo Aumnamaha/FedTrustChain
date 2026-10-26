@@ -189,9 +189,18 @@ FedTrustChain/
 
 ### Prerequisites
 
-- **Python 3.10+** (tested on Fedora Linux with Python 3.14)
+- **Python 3.10+** (tested on Fedora Linux with Python 3.14; also fully compatible with Windows 10/11 and macOS)
 - **8 GB+ RAM** for NF-ToN-IoT; **16 GB+ recommended** for CICIOT23 (~9M samples)
 - **~500 MB disk space** for datasets and model artifacts
+
+### Cross-Platform Notes (Windows)
+
+| Item | Detail |
+|---|---|
+| **Virtual env activation** | Use `.venv\Scripts\activate` instead of `source .venv/bin/activate` |
+| **Path separators** | All Python code uses `os.path.join()` / `pathlib.Path`; no hard-coded `/` or `\` in path construction |
+| **Socket binding** | Server binds to `127.0.0.1` with `SO_REUSEADDR=1` — works identically on Windows, Linux, macOS |
+| **Line endings** | All `.py` files use LF; Python's standard library handles CRLF transparently for file I/O |
 
 ### Step-by-Step Setup
 
