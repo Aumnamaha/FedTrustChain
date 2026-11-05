@@ -6,6 +6,13 @@ server:
   min_clients: 2
   num_rounds: 1
 
+# Dynamic Node Trust Scoring (Phase 2 Step 1)
+# Controls pre-aggregation filtering of adversarial client updates.
+trust_threshold: 0.50
+reward_rate: 0.05
+decay_rate: 0.25
+accuracy_delta: 0.15
+
 algorithm: "RandomForestClassifier"
 model:
   n_estimators_per_client: 50

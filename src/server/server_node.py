@@ -14,6 +14,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 
 from src.models.rf_federated import aggregate_rf_models
+from src.server.dynamic_trust import DynamicTrustManager, aggregate_random_forests
 from src.utils.logger import get_logger
 
 
@@ -37,6 +38,10 @@ class FederatedServer:
     chunk_size : int, default=8192
         Expected payload bytes per datagram (after 12-byte header).
         Set to 8192 to stay under typical MTU and avoid OS-level IP fragmentation.
+    trust_manager : DynamicTrustManager or None, optional
+        Pre-configured trust manager for evaluating client updates before
+        aggregation. If provided, models are scored, hashed, and filtered by
+        reputation before tree union pooling.
     """
 
     # ------------------------------------------------------------------
@@ -58,6 +63,7 @@ class FederatedServer:
         if chunk_size < 512:
             raise ValueError("chunk_size must be >= 512 bytes")
         self.chunk_size = chunk_size
+        self.trust_manager: Optional[DynamicTrustManager] = None
 
         self.logger = get_logger("FederatedServer")
         self.client_models: List[RandomForestClassifier] = []
@@ -66,7 +72,11 @@ class FederatedServer:
 
     # ------------------------------------------------------------------
     def start(
-        self, X_test: np.ndarray, y_test
+        self,
+        X_test: np.ndarray,
+        y_test,
+        X_val: Optional[np.ndarray] = None,
+        y_val=None,
     ) -> Tuple[RandomForestClassifier, Dict[str, float]]:
         """Start the server, receive client models, aggregate, and evaluate.
 
@@ -97,19 +107,63 @@ class FederatedServer:
         self._udp_socket.bind((self.host, self.port))
 
         try:
-            # --- receive models (one client at a time) ----------------------
-            for i in range(self.min_clients):
-                model = self._receive_model(client_index=i + 1)
-                self.client_models.append(model)
-                self.logger.info(
-                    "Received model from client %d (n_estimators=%d)",
-                    i + 1, len(model.estimators_),
+            # --- initialize trust manager if holdout data provided --------
+            if X_val is not None and y_val is not None:
+                self.trust_manager = DynamicTrustManager(
+                    holdout_X=X_val,
+                    holdout_y=y_val,
+                    min_trust_threshold=getattr(self, "_trust_threshold", 0.50),
+                    reward_rate=getattr(self, "_reward_rate", 0.05),
+                    decay_rate=getattr(self, "_decay_rate", 0.25),
                 )
 
-            # --- aggregate --------------------------------------------------
+            # --- receive models (one client at a time) ----------------------
+            received_ids: List[int] = []
+            for i in range(self.min_clients):
+                model = self._receive_model(client_index=i + 1)
+                cid = i + 1  # client_id maps to loop index
+                received_ids.append(cid)
+
+                # --- trust evaluation (if manager configured) ---------------
+                if self.trust_manager is not None:
+                    accepted, accuracy, payload_hash = (
+                        self.trust_manager.evaluate_update(cid, model)
+                    )
+                    self.logger.info(
+                        "Client %d: hash=%s accuracy=%.4f accepted=%s",
+                        cid, payload_hash[:16], accuracy, accepted,
+                    )
+                    if not accepted:
+                        # Still store but mark as rejected — filter later
+                        pass
+                self.client_models.append(model)
+
+            # --- trust-filtered aggregation ---------------------------------
+            if self.trust_manager is not None:
+                trusted_ids, trusted_models = (
+                    self.trust_manager.filter_trusted_clients(
+                        received_ids, self.client_models
+                    )
+                )
+                rejected_count = len(received_ids) - len(trusted_ids)
+                if rejected_count > 0:
+                    self.logger.warning(
+                        "Trust filter: %d/%d clients isolated",
+                        rejected_count, len(received_ids),
+                    )
+                    # Use filtered models for aggregation
+                    aggregate_models = trusted_models
+                    final_ids = trusted_ids
+                else:
+                    aggregate_models = self.client_models
+                    final_ids = received_ids
+            else:
+                aggregate_models = self.client_models
+                final_ids = received_ids
+
             self.logger.info("Aggregating %d client models ...",
-                             len(self.client_models))
-            global_model = aggregate_rf_models(self.client_models)
+                             len(aggregate_models))
+            global_model = aggregate_random_forests(aggregate_models)
             self.logger.info("Global model: %d total trees",
                              global_model.n_estimators)
 
