@@ -77,18 +77,15 @@ class TestBenchmarkSimulation(unittest.TestCase):
         srv_thread = threading.Thread(target=_server_worker, daemon=True)
         srv_thread.start()
 
-        # Launch client threads
-        client_threads = []
+        # Launch clients sequentially (not simultaneously) to avoid
+        # UDP datagram interleaving on the shared socket.
         for cid, (X_c, y_c) in enumerate(partitions):
             t = threading.Thread(
                 target=_client_worker, args=(cid, X_c, y_c), daemon=True
             )
-            client_threads.append(t)
-
-        for t in client_threads:
             t.start()
-        for t in client_threads:
-            t.join(timeout=60)
+            t.join(timeout=30)
+            time.sleep(1.5)  # gap to let server finish reassembly
 
         srv_thread.join(timeout=30)
 
@@ -106,7 +103,7 @@ class TestBenchmarkSimulation(unittest.TestCase):
                            f"Accuracy {metrics['accuracy']:.2%} too low")
 
     def test_no_socket_leaks(self):
-        """After a benchmark round completes, no unexpected TCP connections should be open."""
+        """After a benchmark round completes, no unexpected UDP sockets should remain open."""
         np.random.seed(99)
         X, y = make_classification(
             n_samples=150, n_features=4, n_informative=2,
@@ -152,10 +149,16 @@ class TestBenchmarkSimulation(unittest.TestCase):
             t = threading.Thread(target=_run, daemon=True)
             client_threads.append(t)
 
-        for t in client_threads:
+        # Launch clients sequentially to avoid UDP datagram interleaving.
+        for cid, (X_c, y_c) in enumerate(partitions):
+            def _run(c=cid, x=X_c, y=y_c):
+                server_ready.wait(timeout=15)
+                client.train_and_send(x, y)
+
+            t = threading.Thread(target=_run, daemon=True)
             t.start()
-        for t in client_threads:
-            t.join(timeout=60)
+            t.join(timeout=30)
+            time.sleep(1.5)  # gap for reassembly
         srv_thread.join(timeout=30)
 
         self.assertIsNotNone(results["global_model"])

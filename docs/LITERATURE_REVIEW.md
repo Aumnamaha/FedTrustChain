@@ -1,4 +1,4 @@
-﻿# FedTrustChain: Literature Review & Benchmark Gap Analysis
+# FedTrustChain: Literature Review & Benchmark Gap Analysis
 
 ## 1. Literature Dataset & Benchmark Comparison Table
 
@@ -16,7 +16,7 @@
 
 | # | Literature Research Gap | Existing FL Studies (State-of-the-Art) | FedTrustChain Proposed Solution |
 | :--- | :--- | :--- | :--- |
-| **1** | **High Compute & Communication Latency** | Rely heavily on Deep Neural Networks (DNNs/LSTMs) using `FedAvg`, requiring dozens of iterative backpropagation rounds and high bandwidth. | **Non-Iterative Tree Union Aggregation:** Pools Random Forest estimators ($F_{\text{global}} = \bigcup_{i=1}^{K} T_i$) over 4-byte length-prefixed TCP sockets in **a single round**, completing local client training in $<0.5\text{s}$. |
+| **1** | **High Compute & Communication Latency** | Rely heavily on Deep Neural Networks (DNNs/LSTMs) using `FedAvg`, requiring dozens of iterative backpropagation rounds and high bandwidth. | **Non-Iterative Tree Union Aggregation:** Pools Random Forest estimators ($F_{\text{global}} = \bigcup_{i=1}^{K} T_i$) over chunked UDP datagrams (12-byte binary header) in **a single round**, completing local client training in $<0.5\text{s}$. |
 | **2** | **Vulnerability to Model Poisoning** | Assume all edge devices are honest (zero-verification model), allowing rogue nodes to inject corrupted weights and degrade global accuracy. | **Dynamic Node Trust Scoring (`src/server/dynamic_trust.py`):** Evaluates client update performance against validation benchmarks, computes historical node reputation $T_i \in [0.0, 1.0]$, and filters out low-trust updates before pooling. |
 | **3** | **Black-Box Threat Output** | Produce binary labels (`0` or `1`) without explaining feature drivers, forcing manual, slow triage by Security Operations Center (SOC) teams. | **XAI + Autonomous LLM Supervisor (Phase 3):** Combines TreeSHAP feature attribution with a local Qwen LLM agent to automatically generate plain-English root-cause incident reports. |
 | **4** | **Centralized, Tamper-Prone Audit Logs** | Store global model histories on a single central server, creating a single point of failure and vulnerable audit logs. | **Permissioned Blockchain Ledger (Phase 2):** Hashes model updates (SHA-256) and logs node trust transactions onto an immutable distributed ledger for transparent auditing. |

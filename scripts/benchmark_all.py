@@ -2,7 +2,7 @@
 """End-to-end multi-dataset benchmarking suite for FedTrustChain.
 
 Loads each configured dataset, runs a simulated federated learning round with
-length-prefixed TCP socket communication between clients and server, aggregates
+chunked UDP datagram communication between clients and server, aggregates
 the global Random Forest model, evaluates it, and exports structured metrics to
 ``results/benchmark_summary.json``.
 
@@ -46,7 +46,7 @@ from src.utils.logger import get_logger
 
 # ------------------------------------------------------------------
 def _find_free_port(host: str = "127.0.0.1", start_port: int = 5060) -> int:
-    """Find a TCP port that is currently free to bind on."""
+    """Find a UDP port that is currently free to bind on."""
     for port in range(start_port, start_port + 100):
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -119,7 +119,7 @@ def _run_benchmark_round(
 
     # --- allocate port -------------------------------------------------
     port = _find_free_port()
-    logger.info("Using TCP port %d for benchmark round", port)
+    logger.info("Using UDP port %d for benchmark round", port)
 
     # --- synchronization primitives ------------------------------------
     server_ready = threading.Event()

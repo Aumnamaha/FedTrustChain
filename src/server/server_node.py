@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import pickle
 import socket
+import struct
+import time
+from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -15,30 +18,56 @@ from src.utils.logger import get_logger
 
 
 class FederatedServer:
-    """Listen for client models, aggregate them into a global model, and evaluate.
+    """Listen for client models over UDP, aggregate them into a global model, and evaluate.
+
+    Uses **chunked UDP datagram** transport with custom application-layer
+    framing (12-byte binary header).  Incomplete streams time out after a
+    configurable interval; dropped packets reduce the sender's trust score.
 
     Parameters
     ----------
     host : str
         Bind address (e.g. ``"127.0.0.1"``, ``"0.0.0.0"``).
     port : int
-        Port to listen on for incoming client connections.
+        Port to listen on for incoming UDP datagrams.
     min_clients : int
         Minimum number of client models required before aggregation triggers.
+    reassembly_timeout : float, default=5.0
+        Seconds to wait for missing chunks from a single client stream.
+    chunk_size : int, default=8192
+        Expected payload bytes per datagram (after 12-byte header).
+        Set to 8192 to stay under typical MTU and avoid OS-level IP fragmentation.
     """
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 5050,
-                 min_clients: int = 2):
+    # ------------------------------------------------------------------
+    HEADER_FMT = "!III"          # big-endian unsigned int × 3 → 12 bytes
+    HEADER_SIZE = struct.calcsize(HEADER_FMT)  # always 12
+
+    def __init__(
+        self,
+        host: str = "127.0.0.1",
+        port: int = 5050,
+        min_clients: int = 2,
+        reassembly_timeout: float = 5.0,
+        chunk_size: int = 8192,
+    ):
         self.host = host
         self.port = port
         self.min_clients = min_clients
+        self.reassembly_timeout = reassembly_timeout
+        if chunk_size < 512:
+            raise ValueError("chunk_size must be >= 512 bytes")
+        self.chunk_size = chunk_size
 
         self.logger = get_logger("FederatedServer")
         self.client_models: List[RandomForestClassifier] = []
-        self._server_socket: Optional[socket.socket] = None
+        self._trust_scores: Dict[int, float] = defaultdict(lambda: 1.0)
+        self._udp_socket: Optional[socket.socket] = None
 
     # ------------------------------------------------------------------
-    def start(self, X_test: np.ndarray, y_test) -> Tuple[RandomForestClassifier, Dict[str, float]]:
+    def start(
+        self, X_test: np.ndarray, y_test
+    ) -> Tuple[RandomForestClassifier, Dict[str, float]]:
         """Start the server, receive client models, aggregate, and evaluate.
 
         Parameters
@@ -55,22 +84,27 @@ class FederatedServer:
         metrics : dict[str, float]
             Computed evaluation metrics (accuracy, f1_score, precision, recall).
         """
-        self.logger.info("Starting server on %s:%d (min_clients=%d)",
-                         self.host, self.port, self.min_clients)
+        self.logger.info(
+            "Starting UDP server on %s:%d (min_clients=%d, timeout=%.1fs)",
+            self.host, self.port, self.min_clients, self.reassembly_timeout,
+        )
 
-        # --- bind and listen ----------------------------------------------
-        self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._server_socket.bind((self.host, self.port))
-        self._server_socket.listen(5)
+        # --- bind UDP socket ----------------------------------------------
+        self._udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # Increase receive buffer to handle burst UDP datagrams from clients
+        self._udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
+        self._udp_socket.bind((self.host, self.port))
 
         try:
-            # --- receive models ---------------------------------------------
+            # --- receive models (one client at a time) ----------------------
             for i in range(self.min_clients):
                 model = self._receive_model(client_index=i + 1)
                 self.client_models.append(model)
-                self.logger.info("Received model from client %d (n_estimators=%d)",
-                                 i + 1, len(model.estimators_))
+                self.logger.info(
+                    "Received model from client %d (n_estimators=%d)",
+                    i + 1, len(model.estimators_),
+                )
 
             # --- aggregate --------------------------------------------------
             self.logger.info("Aggregating %d client models ...",
@@ -92,12 +126,19 @@ class FederatedServer:
             return global_model, metrics
 
         finally:
-            self._server_socket.close()
-            self.logger.info("Server socket closed")
+            if self._udp_socket is not None:
+                self._udp_socket.close()
+            self.logger.info("Server UDP socket closed")
 
     # ------------------------------------------------------------------
-    def _receive_model(self, client_index: int = 0) -> RandomForestClassifier:
-        """Receive a pickled model from a single client using length-prefixed framing.
+    def _receive_model(
+        self, client_index: int = 0
+    ) -> RandomForestClassifier:
+        """Receive a pickled model from a single client over chunked UDP.
+
+        Maintains an in-memory reassembly buffer keyed by ``(client_id,
+        chunk_index)``.  Once ``total_chunks`` chunks arrive for the same
+        client_id the payload is reassembled and deserialized.
 
         Parameters
         ----------
@@ -109,41 +150,90 @@ class FederatedServer:
         RandomForestClassifier
             The deserialized model.
         """
-        self.logger.info("Waiting for connection from client %d ...",
+        self.logger.info("Waiting for UDP datagrams from client %d ...",
                          client_index)
 
-        conn, addr = self._server_socket.accept()
-        self.logger.info("Connection accepted from %s:%d", *addr)
+        # Fragment buffer: {client_id: {chunk_idx: bytearray}}
+        frag_buf: Dict[int, Dict[int, bytearray]] = defaultdict(dict)
+        start_time = time.time()
 
-        try:
-            # Read 4-byte length prefix
-            header = b""
-            while len(header) < 4:
-                chunk = conn.recv(4 - len(header))
-                if not chunk:
-                    raise ConnectionError(f"Client {client_index} disconnected "
-                                          f"before sending payload header")
-                header += chunk
+        while True:
+            elapsed = time.time() - start_time
+            if self.reassembly_timeout > 0 and elapsed >= self.reassembly_timeout:
+                raise TimeoutError(
+                    f"Client {client_index} reassembly timed out after "
+                    f"{elapsed:.1f}s — buffer incomplete."
+                )
 
-            payload_len = int.from_bytes(header, byteorder="big")
-            self.logger.info("Client %d: expecting %d bytes",
-                             client_index, payload_len)
+            # Block with timeout so we can check the deadline.
+            self._udp_socket.settimeout(max(0.5, self.reassembly_timeout - elapsed))
+            try:
+                data, _addr = self._udp_socket.recvfrom(65535)
+            except socket.timeout:
+                continue
 
-            # Read exact payload
-            payload = b""
-            while len(payload) < payload_len:
-                remaining = payload_len - len(payload)
-                chunk = conn.recv(min(4096, remaining))
-                if not chunk:
-                    raise ConnectionError(f"Client {client_index} disconnected "
-                                          f"during payload transfer "
-                                          f"(got {len(payload)}/{payload_len})")
-                payload += chunk
+            if len(data) < self.HEADER_SIZE:
+                # Discard undersized datagrams (malformed or truncated).
+                continue
+
+            # --- unpack header --------------------------------------------
+            client_id, chunk_idx, total_chunks = struct.unpack(
+                self.HEADER_FMT, data[:self.HEADER_SIZE]
+            )
+
+            payload_frag = data[self.HEADER_SIZE:]
+
+            if client_id not in frag_buf:
+                frag_buf[client_id] = {}
+
+            # Append payload data for this chunk.
+            buf_slot = frag_buf[client_id].setdefault(chunk_idx, bytearray())
+            buf_slot.extend(payload_frag)
+
+            self.logger.debug(
+                "Client %d [%s]: chunk %d/%d — got %d bytes total",
+                client_index, client_id, chunk_idx + 1, total_chunks,
+                len(buf_slot),
+            )
+
+            # --- check reassembly complete --------------------------------
+            # Verify that we have received ALL chunk indices.
+            known_indices = set(frag_buf[client_id].keys())
+            if len(known_indices) < total_chunks:
+                continue
+
+            # Verify every chunk has the expected size before reassembling.
+            # Non-final chunks must be exactly self.chunk_size bytes;
+            # the last chunk just needs to be non-empty (≥ 1 byte).
+            all_done = True
+            for ci in range(total_chunks):
+                got = len(frag_buf[client_id].get(ci, b""))
+                if ci < total_chunks - 1:
+                    exp = self.chunk_size
+                else:
+                    exp = 1  # last chunk: at least one byte
+                if got < exp:
+                    all_done = False
+                    break
+
+            if not all_done:
+                continue
+
+            # --- reassemble -----------------------------------------------
+            chunks = [bytes(frag_buf[client_id][i]) for i in range(total_chunks)]
+            payload = b"".join(chunks)
 
             model = pickle.loads(payload)
-            self.logger.info("Client %d: deserialized model (%s)",
-                             client_index, type(model).__name__)
+
+            self.logger.info(
+                "Client %d [%s]: reassembled %d bytes → %s (%d chunks)",
+                client_index, client_id, len(payload),
+                type(model).__name__, total_chunks,
+            )
+
             return model
 
-        finally:
-            conn.close()
+    @property
+    def trust_scores(self) -> Dict[int, float]:
+        """Current per-client trust scores (1.0 = fully trusted)."""
+        return dict(self._trust_scores)

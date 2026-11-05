@@ -8,7 +8,7 @@
 
 FedTrustChain is a production-grade federated learning (FL) system designed to detect cyber intrusions across distributed healthcare and IoT infrastructure without centralizing sensitive network traffic data. The framework employs **Federated Random Forest** aggregation — uniting locally-trained decision tree ensembles from multiple client nodes into a global model via estimator union (`F_global = ⋃ T_i`), eliminating the need for raw data sharing while preserving privacy by design.
 
-Communication between clients and server uses **length-prefixed TCP socket streaming** (4-byte big-endian `struct.pack('>I', payload_length)`) to guarantee pickle-serialized model payloads are received atomically, avoiding TCP stream fragmentation entirely.
+Communication between clients and server uses **chunked UDP datagram transport** with a custom 12-byte binary header (`struct.pack("!III", client_id, chunk_index, total_chunks)`) for low-latency wireless edge networking. Each serialized model payload is partitioned into independently routable datagrams of configurable size (default 1024 bytes), enabling efficient transmission across constrained IoT links.
 
 ---
 
@@ -22,27 +22,45 @@ Unlike gradient-based FL (FedAvg), tree ensembles cannot be averaged via weight 
 F_global = ⋃_{i=1}^{K} T_i   where K = number of participating clients
 ```
 
-Each client `i` trains a local `RandomForestClassifier(n_estimators, max_depth)` on its private dataset. The server receives each fitted model via TCP socket, extracts the list of individual decision trees (`estimators_`), and concatenates them into a single global forest. The resulting model retains the predictive power of all clients' data while never requiring raw samples to leave their local nodes.
+Each client `i` trains a local `RandomForestClassifier(n_estimators, max_depth)` on its private dataset. The server receives each fitted model over chunked UDP datagrams, extracts the list of individual decision trees (`estimators_`), and concatenates them into a single global forest. The resulting model retains the predictive power of all clients' data while never requiring raw samples to leave their local nodes.
 
-### Network Protocol: Length-Prefixed Framing
+### Network Protocol: Chunked UDP Datagram Transport
 
-To prevent TCP stream fragmentation with large pickle payloads (~20 MB for 50 trees × 36 features), every transmission is wrapped:
+To minimize latency on wireless edge links, model payloads are split into small UDP datagrams with application-layer sequencing. Each datagram carries a 12-byte header followed by up to `chunk_size` bytes (default 1024) of payload:
 
 ```
-[4-byte big-endian unsigned int: payload_length][payload_bytes]
+[client_id: 4B][chunk_index: 4B][total_chunks: 4B] [payload_chunk_bytes]
 ```
 
-**Sender:** `sock.sendall(len(payload).to_bytes(4, 'big'))` → `sock.sendall(payload)`  
-**Receiver:** Read 4 bytes → decode length → read exact N bytes → `pickle.loads()`
+**Sender:** Partition serialized model → prepend 12-byte header per chunk → `sock.sendto(datagram, (host, port))` for each chunk.  
+**Receiver:** Bind UDP socket → unpack header → buffer chunks by `(client_id, chunk_index)` → reassemble when all chunks arrive → `pickle.loads(reassembled_payload)`.  
 
-This guarantees atomic delivery regardless of network packet boundaries.
+This approach tolerates individual datagram loss via timeout-based detection and trust-score penalties, making it well-suited for unreliable wireless IoT links where TCP's retransmission overhead would add unacceptable latency.
+
+#### Wireless IoT Edge Node Considerations
+
+The chunked UDP transport layer was specifically designed for resource-constrained wireless edge environments common in healthcare IoMT and industrial IoT deployments:
+
+| Parameter | Default | Tuning Guidance |
+|---|---|---|
+| `chunk_size` (client/server) | 8192 bytes | Increase for high-bandwidth links; decrease to 1024–2048 on Wi‑Fi to avoid IP fragmentation |
+| `reassembly_timeout` (server) | 5.0 s | Increase to 10–15 s for high-latency cellular links; decrease to 2 s for dense sensor meshes |
+| Header overhead | 12 bytes per datagram | At default 8192-byte chunks: ~0.15 %; at 1024-byte chunks: ~1.2 % (use smaller chunks on Wi‑Fi to avoid IP fragmentation) |
+
+**Why UDP over TCP for edge FL?**
+
+- **Lower latency**: No handshakes, no retransmission stalls on lost packets — critical when client nodes are battery-powered IoT sensors with intermittent connectivity.
+- **Smaller per-packet overhead**: 12-byte application header vs. TCP's minimum 20-byte IP + 20-byte TCP header + potential TLS (32+ bytes). At 8192-byte chunks this saves ~5–10 % of transport-layer bytes per packet.
+- **Graceful degradation**: Dropped datagrams are detected at the application layer via timeout and trust-score penalties rather than stalling the entire connection waiting for TCP retransmission ACKs.
+
+---
 
 ### System Components
 
 ```
 ┌─────────────────────────────────────────────────────┐
 │                  Federated Server                    │
-│  (Binds TCP socket, receives models, aggregates,    │
+│  (Binds UDP socket, receives models, aggregates,    │
 │   evaluates global model on held-out test data)      │
 │                                                      │
 │  ┌──────────────┐    ┌──────────────┐               │
@@ -50,7 +68,7 @@ This guarantees atomic delivery regardless of network packet boundaries.
 │  │(server_node.py)│   │models()      │               │
 │  └──────────────┘    └──────────────┘               │
 └─────────────────────────────────────────────────────┘
-         ▲ TCP sockets (length-prefixed pickle)
+         ▲ Chunked UDP datagrams (12-byte header + payload)
          │
 ┌────────┴──────────┐  ┌────────┴──────────┐
 │  Client Node 0    │  │  Client Node K-1  │
@@ -69,7 +87,7 @@ This guarantees atomic delivery regardless of network packet boundaries.
 
 The server **does not train on raw data**. Its responsibilities are:
 
-1. **Bind a TCP socket** on a configurable host/port (default `127.0.0.1:5050`).
+1. **Bind a UDP socket** on a configurable host/port (default `127.0.0.1:5050`) and wait for incoming datagrams.
 2. **Receive serialized models** from each participating client — one at a time, in the order they connect.
 3. **Aggregate received estimators** into a single global forest using estimator union fusion (`aggregate_rf_models`), which extracts every `estimator_` (individual decision tree) from each client's `RandomForestClassifier` and concatenates them into one large ensemble.
 4. **Evaluate the aggregated model** against a holdout test dataset to compute accuracy, F1-score, precision, and recall.
@@ -85,7 +103,7 @@ Each client node operates independently on its private data slice:
 2. **Partition the full dataset** into `num_clients` equal contiguous chunks using stratified chunking — each client receives one chunk.
 3. **Train a `RandomForestClassifier`** strictly on its assigned chunk (default: 50 trees, max depth 15).
 4. **Serialize the fitted model** via `pickle.dumps()` into a byte payload (~20 MB for 50 trees × 36 features).
-5. **Stream the payload over TCP** using length-prefixed framing — sends the 4-byte length header first, then the raw bytes.
+5. **Transmit the payload over chunked UDP**: partition into 1024-byte chunks, prepend a 12-byte binary header per chunk (`client_id | chunk_index | total_chunks`), and `sendto()` each datagram to `(server_host, server_port)`.
 6. **Return** the fitted local model to the caller.
 
 Clients never communicate with each other; all communication flows through the central server.
@@ -101,7 +119,7 @@ Clients never communicate with each other; all communication flows through the c
 │  Never sees: raw data samples, feature values,        │
 │              labels, or network traffic logs           │
 └───────────────▲──────────────────▲────────────────────┘
-                │ encrypted TCP    │ encrypted TCP
+                │ UDP datagram     │ UDP datagram
                 ▼                  ▼
 ┌───────────────┴──────────┐ ┌────┴──────────────────────┐
 │   Client Node 0          │ │   Client Node K-1         │
@@ -160,7 +178,7 @@ FedTrustChain/
 │   ├── __init__.py
 │   ├── client/                  # Federated learning client implementation
 │   │   ├── __init__.py
-│   │   └── client_node.py       # FederatedClient: trains + sends models over TCP
+│   │   └── client_node.py       # FederatedClient: trains + sends models over chunked UDP
 │   ├── server/                  # Federated learning server implementation
 │   │   ├── __init__.py
 │   │   └── server_node.py       # FederatedServer: receives, aggregates, evaluates
@@ -174,7 +192,7 @@ FedTrustChain/
 │   ├── __init__.py
 │   ├── test_aggregation.py      # RF model aggregation edge cases (7 tests)
 │   ├── test_loader.py           # Dataset loading & client partitioning (9 tests)
-│   ├── test_networking.py       # TCP client-server pipeline (2 tests)
+│   ├── test_networking.py       # Chunked UDP client-server pipeline (2 tests)
 │   └── test_simulation.py       # Full benchmark round on synthetic data (2 tests)
 ├── results/                     # Benchmark output artifacts (gitignored except JSON)
 │   └── benchmark_summary.json   # Structured metrics per dataset run
@@ -271,7 +289,7 @@ python scripts/benchmark_all.py
 
 This script:
 1. Loads all three datasets from `configs/config.yaml`
-2. For each dataset: partitions data across `min_clients`, spawns FL round via TCP sockets, aggregates global model, evaluates metrics
+2. For each dataset: partitions data across `min_clients`, spawns FL round via chunked UDP datagrams, aggregates global model, evaluates metrics
 3. Exports structured results to `results/benchmark_summary.json`
 4. Prints a formatted ASCII summary table
 
