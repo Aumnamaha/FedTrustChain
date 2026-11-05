@@ -13,6 +13,12 @@ reward_rate: 0.05
 decay_rate: 0.25
 accuracy_delta: 0.15
 
+# Permissioned Blockchain Ledger (Phase 2 Step 2)
+# Immutable audit trail for model payload hashes, trust scores, and aggregation decisions.
+blockchain_enabled: true
+audit_log_path: "results/blockchain_audit_log.json"
+mining_difficulty: 2
+
 algorithm: "RandomForestClassifier"
 model:
   n_estimators_per_client: 50

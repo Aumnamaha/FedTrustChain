@@ -13,6 +13,7 @@ import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 
+from src.blockchain.ledger import PermissionedLedger
 from src.models.rf_federated import aggregate_rf_models
 from src.server.dynamic_trust import DynamicTrustManager, aggregate_random_forests
 from src.utils.logger import get_logger
@@ -42,6 +43,13 @@ class FederatedServer:
         Pre-configured trust manager for evaluating client updates before
         aggregation. If provided, models are scored, hashed, and filtered by
         reputation before tree union pooling.
+    blockchain_enabled : bool, default=False
+        When True, creates a PermissionedLedger to immutably log every client
+        evaluation event (ACCEPTED / REJECTED) with SHA-256 payload hashes,
+        trust scores, and aggregation decisions.
+    audit_log_path : str | Path, optional
+        File path for JSON audit log export. Only used when *blockchain_enabled*
+        is True. Defaults to ``results/blockchain_audit_log.json``.
     """
 
     # ------------------------------------------------------------------
@@ -64,6 +72,9 @@ class FederatedServer:
             raise ValueError("chunk_size must be >= 512 bytes")
         self.chunk_size = chunk_size
         self.trust_manager: Optional[DynamicTrustManager] = None
+        self.blockchain_enabled: bool = False
+        self.audit_log_path: Optional[str | Path] = None
+        self.ledger: Optional[PermissionedLedger] = None
 
         self.logger = get_logger("FederatedServer")
         self.client_models: List[RandomForestClassifier] = []
@@ -77,6 +88,9 @@ class FederatedServer:
         y_test,
         X_val: Optional[np.ndarray] = None,
         y_val=None,
+        blockchain_enabled: bool = False,
+        audit_log_path: Optional[str | Path] = None,
+        difficulty: int = 2,
     ) -> Tuple[RandomForestClassifier, Dict[str, float]]:
         """Start the server, receive client models, aggregate, and evaluate.
 
@@ -117,6 +131,22 @@ class FederatedServer:
                     decay_rate=getattr(self, "_decay_rate", 0.25),
                 )
 
+            # --- initialize blockchain ledger if enabled ------------------
+            self.blockchain_enabled = bool(blockchain_enabled)
+            self.audit_log_path = audit_log_path or getattr(
+                self, "_audit_log_path", "results/blockchain_audit_log.json"
+            )
+            if self.blockchain_enabled:
+                from pathlib import Path
+                self.ledger = PermissionedLedger(
+                    difficulty=difficulty,
+                    audit_log_path=self.audit_log_path,
+                )
+                self.logger.info(
+                    "Blockchain ledger initialized (path=%s, difficulty=%d)",
+                    self.audit_log_path, difficulty,
+                )
+
             # --- receive models (one client at a time) ----------------------
             received_ids: List[int] = []
             for i in range(self.min_clients):
@@ -133,6 +163,20 @@ class FederatedServer:
                         "Client %d: hash=%s accuracy=%.4f accepted=%s",
                         cid, payload_hash[:16], accuracy, accepted,
                     )
+                    # --- record to blockchain ledger ------------------------
+                    if self.ledger is not None:
+                        status = "ACCEPTED" if accepted else "REJECTED"
+                        current_trust = (
+                            self.trust_manager.node_registry[cid].trust_score
+                            if self.trust_manager is not None
+                            else 1.0
+                        )
+                        self.ledger.record_transaction(
+                            client_id=cid,
+                            model_hash=payload_hash,
+                            trust_score=current_trust,
+                            status=status,
+                        )
                     if not accepted:
                         # Still store but mark as rejected — filter later
                         pass
@@ -166,6 +210,18 @@ class FederatedServer:
             global_model = aggregate_random_forests(aggregate_models)
             self.logger.info("Global model: %d total trees",
                              global_model.n_estimators)
+
+            # --- mine blockchain block and export audit log ---------------
+            if self.ledger is not None:
+                mined_block = self.ledger.mine_pending_block()
+                audit_path = self.ledger.export_audit_log_json()
+                summary = self.ledger.get_chain_summary()
+                self.logger.info(
+                    "Blockchain: block #%d mined (nonce=%d, txns=%d) → %s",
+                    mined_block.index, mined_block.nonce,
+                    len(mined_block.transactions), audit_path,
+                )
+                self.logger.info("Chain validation: %s", summary["is_valid"])
 
             # --- evaluate ---------------------------------------------------
             y_pred = global_model.predict(X_test)
