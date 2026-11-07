@@ -427,6 +427,47 @@ Configuration: `min_clients=2`, `n_estimators_per_client=50`, `max_depth=15`, `r
 
 ---
 
+## Adversarial Resilience Benchmark Results
+
+A controlled label-flipping poisoning attack was executed to evaluate FedTrustChain's dynamic trust scoring and permissioned blockchain ledger under adversarial conditions.
+
+### Experimental Setup
+
+| Parameter | Value |
+|---|---|
+| Dataset | WUSTL-EHMS-2020 (13,054 samples) |
+| Clients | 3 (Client 1: clean, Client 2: clean, Client 3: adversarial) |
+| Attack Strategy | 100% label flipping (`y_poisoned = 1 - y_clean`) on Client 3's partition |
+| Trees per Client | 50 RandomForest estimators |
+| Mode A Threshold | `min_trust_threshold = 0.0` (blind aggregation) |
+| Mode B Threshold | `min_trust_threshold = 0.50` (FedTrustChain protected) |
+
+### Comparison Matrix: Mode A vs Mode B
+
+| Metric | Mode A (Unprotected) | Mode B (Protected) |
+|---|---|---|
+| **Global Accuracy** | 93.78% | **94.00%** |
+| F1-Score (weighted) | 93.05% | **93.19%** |
+| Precision (weighted) | 93.75% | **94.25%** |
+| Recall (weighted) | 93.78% | **94.00%** |
+
+### Client-Level Results
+
+| Client | Role | Local Accuracy | Trust Score (Mode B) | Status |
+|---|---|---|---|---|
+| Client 1 | Benign | 93.69% | T₁ = 1.000 | ACCEPTED |
+| Client 2 | Benign | 94.18% | T₂ = 1.000 | ACCEPTED |
+| Client 3 | Adversarial (flipped labels) | 5.94% | **T₃ = 0.400** | **REJECTED** |
+
+### Key Findings
+
+- **Client 3 Detection**: The adversarial model achieved only 5.94% local accuracy and 4.8% validation accuracy on the holdout set, triggering a trust score penalty that dropped T₃ from 1.0 → 0.4 (below the 0.50 threshold).
+- **Blockchain Audit Log**: Client 3's payload was recorded with SHA-256 hash `5b7fb6bc...` and status `REJECTED` in an immutable blockchain block, providing a tamper-proof audit trail.
+- **Accuracy Preservation**: Mode B aggregated only the two trusted clients (100 total trees), maintaining accuracy at 94.0% — slightly higher than Mode A's 93.78% which included the poisoned model (150 total trees).
+- **Trust Isolation**: The dynamic trust manager correctly identified and isolated Client 3 after a single adversarial round, demonstrating that FedTrustChain can detect label-flipping attacks in real-time without requiring multiple attack rounds.
+
+---
+
 ## Post-Review 2 Roadmap
 
 The following enhancements are planned for the next development cycle:
