@@ -13,6 +13,7 @@ import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 
+from src.blockchain.consensus import ProofOfWork, ValidatorRegistry
 from src.blockchain.ledger import PermissionedLedger
 from src.models.rf_federated import aggregate_rf_models
 from src.server.dynamic_trust import DynamicTrustManager, aggregate_random_forests
@@ -75,6 +76,10 @@ class FederatedServer:
         self.blockchain_enabled: bool = False
         self.audit_log_path: Optional[str | Path] = None
         self.ledger: Optional[PermissionedLedger] = None
+        # --- Phase 3 Step 1: Consensus Engine integration -----------------
+        self.consensus_enabled: bool = False
+        self.proof_of_work: Optional[ProofOfWork] = None
+        self.validator_registry: Optional[ValidatorRegistry] = None
 
         self.logger = get_logger("FederatedServer")
         self.client_models: List[RandomForestClassifier] = []
@@ -147,6 +152,19 @@ class FederatedServer:
                     self.audit_log_path, difficulty,
                 )
 
+            # --- initialize consensus engine if enabled -------------------
+            if blockchain_enabled:
+                self.consensus_enabled = True
+                self.proof_of_work = ProofOfWork(default_difficulty=difficulty)
+                self.validator_registry = ValidatorRegistry(
+                    min_trust_threshold=self.trust_manager.min_trust_threshold
+                    if self.trust_manager else 0.50,
+                )
+                self.logger.info(
+                    "Consensus engine initialized (PoW difficulty=%d)",
+                    difficulty,
+                )
+
             # --- receive models (one client at a time) ----------------------
             received_ids: List[int] = []
             for i in range(self.min_clients):
@@ -177,6 +195,47 @@ class FederatedServer:
                             trust_score=current_trust,
                             status=status,
                         )
+                        # --- Phase 3 Step 1: Consensus block mining ---------------
+                        if (self.consensus_enabled and accepted
+                                and self.proof_of_work is not None
+                                and self.validator_registry is not None):
+                            # Verify proposer authorization via ValidatorRegistry
+                            if self.validator_registry.verify_proposer(cid):
+                                self.validator_registry.sign_block(
+                                    cid, payload_hash[:16] + "_block"
+                                )
+                                # Append transaction to consensus mining pool
+                                consensus_tx = {
+                                    "client_id": cid,
+                                    "model_hash": payload_hash,
+                                    "trust_score": round(current_trust, 6),
+                                    "status": status,
+                                    "timestamp": self.ledger._now_iso(),
+                                }
+                                # Mine a consensus block (single-transaction blocks per round)
+                                prev_block = self.ledger.chain[-1]
+                                mined = self.proof_of_work.mine_block(
+                                    index=prev_block.index + 1,
+                                    timestamp=self.ledger._now_iso(),
+                                    transactions=[consensus_tx],
+                                    previous_hash=prev_block._hash or prev_block.calculate_hash(),
+                                    difficulty=difficulty,
+                                )
+                                # Broadcast mined block header (logged)
+                                self.logger.info(
+                                    "Consensus block #%d mined — hash=%s nonce=%d "
+                                    "(diff=%d, proposer=node%d)",
+                                    mined["index"],
+                                    mined["hash"][:16],
+                                    mined["nonce"],
+                                    mined["difficulty"],
+                                    cid,
+                                )
+                            else:
+                                self.logger.warning(
+                                    "Consensus: node %d not authorized to propose block",
+                                    cid,
+                                )
                     if not accepted:
                         # Still store but mark as rejected — filter later
                         pass

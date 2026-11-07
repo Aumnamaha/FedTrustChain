@@ -58,16 +58,24 @@ The chunked UDP transport layer was specifically designed for resource-constrain
 ### System Components
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                  Federated Server                    │
-│  (Binds UDP socket, receives models, aggregates,    │
-│   evaluates global model on held-out test data)      │
-│                                                      │
-│  ┌──────────────┐    ┌──────────────┐               │
-│  │FederatedServer│    │aggregate_rf_ │               │
-│  │(server_node.py)│   │models()      │               │
-│  └──────────────┘    └──────────────┘               │
-└─────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                  Federated Server                                 │
+│  (Binds UDP socket, receives models, aggregates,                 │
+│   evaluates global model on held-out test data)                  │
+│                                                                   │
+│  ┌──────────────┐    ┌──────────────┐    ┌───────────────────┐  │
+│  │FederatedServer│    │aggregate_rf_ │    │Consensus Engine   │  │
+│  │(server_node.py)│   │models()      │    │consensus.py       │  │
+│  └──────────────┘    └──────────────┘    │• ProofOfWork       │  │
+│     ▲                                     │• ValidatorRegistry │  │
+│     │ UDP models                          │• ChainValidator    │  │
+│     ▼                                     └───────────────────┘  │
+│  ┌──────────────┐                                                  │
+│  │DynamicTrust   │                                                  │
+│  │Manager        │                                                  │
+│  │(dynamic_trust)│                                                  │
+│  └──────────────┘                                                  │
+└──────────────────────────────────────────────────────────────────┘
          ▲ Chunked UDP datagrams (12-byte header + payload)
          │
 ┌────────┴──────────┐  ┌────────┴──────────┐
@@ -131,6 +139,44 @@ Clients never communicate with each other; all communication flows through the c
 
 **Key invariant:** Raw dataset logs never leave edge devices. The only artifacts transmitted across the wire are decision tree estimator objects — internal node split thresholds, feature indices, and leaf values. These reveal no individual training samples.
 
+### Consensus Engine (Phase 3 Step 1)
+
+FedTrustChain integrates a **Proof-of-Work consensus engine** (`src/blockchain/consensus.py`) that provides tamper-evident block creation and automatic fork resolution on top of the existing permissioned ledger:
+
+```
+Client Model Received -> DynamicTrustManager.evaluate_update()
+    |
+    +-- T_i >= 0.50 (trusted) --> ValidatorRegistry.verify_proposer(node_id)
+    |   |                              |
+    |   |                              +-- Authorized OK -> ProofOfWork.mine_block()
+    |   |                              |                    |
+    |   |                              |                    +-- Append transaction to block
+    |   |                              |                    +-- Find nonce (3 leading zeros)
+    |   |                              |                    +-- Broadcast mined block header
+    |   |                              |
+    |   |                              +-- Unauthorized FAIL -> Log warning, skip mining
+    |   |
+    +-- T_i < 0.50 (untrusted) --> Skip consensus mining, log REJECTED
+
+ChainValidator.validate_chain() runs continuously:
+    +-- Check 1: PoW hash verification (SHA-256 content match)
+    +-- Check 2: Difficulty compliance (leading zeros in hash)
+    +-- Check 3: Chain linkage (previous_hash integrity)
+
+On fork detection -> resolve_fork() adopts longest valid chain.
+```
+
+**Components:**
+| Component | Responsibility |
+|---|---|
+| `ProofOfWork` | Dynamic target difficulty mining (default: 3 leading zero hex characters). Mines blocks containing validated client transactions. |
+| `ValidatorRegistry` | Tracks node signatures and trust scores. Only nodes with T_i >= 0.50 may propose or sign candidate blocks. |
+| `ChainValidator` | Detects three tamper categories - payload modification, chain-link breach, invalid nonce - and triggers automatic fork resolution to the longest valid chain. |
+
+---
+
+### Tree Estimator Union Aggregation
+
 ### Tree Estimator Union Aggregation
 
 Unlike gradient-based FL (FedAvg), which averages model weights, tree ensembles cannot be averaged element-wise. FedTrustChain uses a **bag-of-trees** aggregation strategy:
@@ -176,12 +222,17 @@ FedTrustChain/
 │   └── __init__.py
 ├── src/                         # Core application modules (importable package)
 │   ├── __init__.py
+│   ├── blockchain/              # Permissioned blockchain & consensus engine
+│   │   ├── __init__.py
+│   │   ├── ledger.py            # Phase 2: Block + PermissionedLedger (audit trail)
+│   │   └── consensus.py         # Phase 3: ProofOfWork + ValidatorRegistry + ChainValidator
 │   ├── client/                  # Federated learning client implementation
 │   │   ├── __init__.py
 │   │   └── client_node.py       # FederatedClient: trains + sends models over chunked UDP
 │   ├── server/                  # Federated learning server implementation
 │   │   ├── __init__.py
-│   │   └── server_node.py       # FederatedServer: receives, aggregates, evaluates
+│   │   ├── dynamic_trust.py     # Dynamic trust scoring for client evaluation
+│   │   └── server_node.py       # FederatedServer: receives, aggregates, evaluates + consensus mining
 │   ├── models/                  # Model aggregation & architecture
 │   │   ├── __init__.py
 │   │   └── rf_federated.py      # aggregate_rf_models(): estimator union fusion
@@ -191,11 +242,16 @@ FedTrustChain/
 ├── tests/                       # Unit and integration test suite
 │   ├── __init__.py
 │   ├── test_aggregation.py      # RF model aggregation edge cases (7 tests)
-│   ├── test_loader.py           # Dataset loading & client partitioning (9 tests)
-│   ├── test_networking.py       # Chunked UDP client-server pipeline (2 tests)
-│   └── test_simulation.py       # Full benchmark round on synthetic data (2 tests)
+│   ├── test_adversarial_resilience.py  # Trust-filtered adversarial robustness (8 tests)
+│   ├── test_blockchain_ledger.py     # Permissioned ledger integrity (9 tests)
+│   ├── test_consensus.py           # PoW mining + tamper detection + fork resolution (24 tests)
+│   ├── test_dynamic_trust.py       # Dynamic trust scoring (7 tests)
+│   ├── test_loader.py              # Dataset loading & client partitioning (9 tests)
+│   ├── test_networking.py          # Chunked UDP client-server pipeline (2 tests)
+│   └── test_simulation.py          # Full benchmark round on synthetic data (2 tests)
 ├── results/                     # Benchmark output artifacts (gitignored except JSON)
-│   └── benchmark_summary.json   # Structured metrics per dataset run
+│   ├── benchmark_summary.json   # Structured metrics per dataset run
+│   └── blockchain_audit_log.json# Phase 2+3: Chain state, block records, consensus metadata
 ├── .gitignore                   # Ignore patterns for data, models, venvs, logs
 ├── requirements.txt             # Pinned Python dependencies
 └── README.md                    # This file
@@ -472,11 +528,19 @@ A controlled label-flipping poisoning attack was executed to evaluate FedTrustCh
 
 The following enhancements are planned for the next development cycle:
 
-### 🔗 Permissioned Blockchain Ledger Integration
+### 🔗 Permissioned Blockchain Ledger Integration **COMPLETED**
 
-- Integrate a **Hyperledger Fabric** or **Corda** permissioned ledger to immutably record every global model update
-- Each aggregation round produces a blockchain transaction containing the global model hash, participating client IDs, and evaluation metrics
-- Enables full audit trail for regulatory compliance (HIPAA, NIST 800-53)
+- **Phase 2 Step 2:** Implemented `PermissionedLedger` with SHA-256 block hashing and immutable audit trail (`src/blockchain/ledger.py`).
+- Each aggregation round logs client model hashes, trust scores, and ACCEPTED/REJECTED decisions.
+- JSON export to `results/blockchain_audit_log.json` for regulatory compliance (HIPAA, NIST 800-53).
+
+### 🏗️ Consensus Engine **COMPLETED**
+
+- **Phase 3 Step 1:** Implemented full consensus engine (`src/blockchain/consensus.py`):
+  - `ProofOfWork`: Dynamic PoW mining with configurable difficulty (default = 3 leading zeros).
+  - `ValidatorRegistry`: Node authorization enforced via trust threshold T_i >= 0.50.
+  - `ChainValidator`: Tamper detection (payload, linkage, nonce) + automatic fork resolution to longest valid chain.
+- Integrated into UDP aggregation server: trusted clients trigger consensus block mining per round.
 
 ### 📜 Smart Contract Model Verification
 
