@@ -222,7 +222,42 @@ FedTrustChain extends the consensus engine with **asynchronous UDP block broadca
 **Network Resilience:**
 - Nodes can disconnect mid-chain and rejoin via broadcast sync.
 - Partial chains remain valid; full sync restores complete state.
-- Fork resolution always selects the longest valid chain. |
+- Fork resolution always selects the longest valid chain.
+
+### High-Concurrency Throughput & Node Churn (Phase 2 Infrastructure)
+
+FedTrustChain supports high-concurrency UDP traffic with dynamic node churn:
+
+```
+┌──────────┐ ┌──────────┐ ┌──────────┐    ┌──────────────┐
+│ Worker 1 │ │ Worker 2 │ │ ...      │    │              │
+│ T=0.95   │ │ T=0.90   │ │ Worker 7 │    │ Federated    │
+│ ---------->│ ---------->|----------->|----|Server        │
+│            │            │            |    │ (UDP)       │
+│            │            │ DISCONNECT │    │              │
+└──────────┘ └──────────┘ └────▲─────┘    │  ┌──────────┐ │
+                               │          |--|TrustMgr   |-|
+                    Reconnect◄─┘          |  └──────────┘ │
+                           Workers 11,12  |              │
+                                           └──────────────┘
+```
+
+**Churn Execution Flow:**
+1. 10 concurrent worker nodes send model payloads simultaneously over chunked UDP.
+2. After receiving models from 7 workers, nodes 8-10 are disconnected mid-round.
+3. While aggregation/ledger logging is active, 2 new peer nodes (11, 12) join and send models.
+4. Server completes aggregation with all available trusted models.
+5. All active peers maintain identical block heights via consensus broadcast.
+
+**Stress Test Results:**
+| Metric | Value |
+|---|---|
+| Concurrent workers launched | 10 (+ 2 during churn) |
+| Workers disconnected mid-round | 3 (nodes 8, 9, 10) |
+| New peers attached during aggregation | 2 (nodes 11, 12) |
+| Deadlock-free | YES — zero orphaned state |
+| Convergence status | CONVERGED — all active nodes on identical block height |
+| Audit log stability | VALID — transaction logging uninterrupted through churn  |
 
 ---
 
@@ -271,6 +306,7 @@ FedTrustChain/
 ├── scripts/                     # Standalone execution scripts
 │   ├── benchmark_all.py         # Multi-dataset FL benchmark orchestrator
 │   ├── simulate_consensus_network.py  # Phase 3: 3-node P2P consensus simulation
+│   ├── stress_test_network.py   # Phase 2: High-concurrency UDP stress test & node churn
 │   └── __init__.py
 ├── src/                         # Core application modules (importable package)
 │   ├── __init__.py
@@ -299,13 +335,15 @@ FedTrustChain/
 │   ├── test_consensus.py           # PoW mining + tamper detection + fork resolution (24 tests)
 │   ├── test_dynamic_trust.py       # Dynamic trust scoring (7 tests)
 │   ├── test_loader.py              # Dataset loading & client partitioning (9 tests)
+│   ├── test_network_churn.py       # Phase 2: Peer disconnect/reconnect, out-of-order packets, deadlock-free concurrency (5 tests)
 │   ├── test_networking.py          # Chunked UDP client-server pipeline (2 tests)
 │   ├── test_p2p_consensus.py       # Phase 3 Step 2: P2P broadcasting, fork resolution, sync recovery (8 tests)
 │   └── test_simulation.py          # Full benchmark round on synthetic data (2 tests)
 ├── results/                     # Benchmark output artifacts (gitignored except JSON)
 │   ├── benchmark_summary.json           # Structured metrics per dataset run
 │   ├── blockchain_audit_log.json        # Phase 2+3: Chain state, block records, consensus metadata
-│   └── consensus_simulation.json        # Phase 3 Step 2: P2P simulation results (convergence, latency)
+│   ├── consensus_simulation.json        # Phase 3 Step 2: P2P simulation results (convergence, latency)
+│   └── network_stress_results.json      # Phase 2: High-concurrency stress metrics & churn recovery
 ├── .gitignore                   # Ignore patterns for data, models, venvs, logs
 ├── requirements.txt             # Pinned Python dependencies
 └── README.md                    # This file
@@ -604,6 +642,14 @@ The following enhancements are planned for the next development cycle:
   - Malicious peer detection: forged blocks with invalid previous hash links are rejected across all honest nodes.
   - Network resilience: partial chains remain valid; rejoining nodes sync via broadcast stream.
 - Integration tests (`tests/test_p2p_consensus.py`): UDP broadcasting, race conditions, fork resolution, disconnect recovery.
+
+### 🚀 High-Concurrency Infrastructure **COMPLETED**
+
+- **Phase 2 Milestone:** Implemented high-concurrency network stress testing and node churn resilience:
+  - `scripts/stress_test_network.py`: Simulates 10 concurrent UDP worker nodes with dynamic churn (disconnect 3 mid-round, attach 2 new during aggregation).
+  - `tests/test_network_churn.py`: Tests rapid peer disconnect/reconnect without payload loss, out-of-order UDP packet handling, ledger state recovery for re-joining nodes.
+  - Zero orphaned state deadlocks confirmed; all active peers maintain identical block heights through churn events.
+  - Audit log remains stable and uninterrupted during node turnover.
 
 ### 📜 Smart Contract Model Verification
 
