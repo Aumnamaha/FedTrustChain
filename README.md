@@ -171,7 +171,58 @@ On fork detection -> resolve_fork() adopts longest valid chain.
 |---|---|
 | `ProofOfWork` | Dynamic target difficulty mining (default: 3 leading zero hex characters). Mines blocks containing validated client transactions. |
 | `ValidatorRegistry` | Tracks node signatures and trust scores. Only nodes with T_i >= 0.50 may propose or sign candidate blocks. |
-| `ChainValidator` | Detects three tamper categories - payload modification, chain-link breach, invalid nonce - and triggers automatic fork resolution to the longest valid chain. |
+| `ChainValidator` | Detects three tamper categories - payload modification, chain-link breach, invalid nonce - and triggers automatic fork resolution to the longest valid chain.'
+
+### Multi-Node P2P Block Propagation (Phase 3 Step 2)
+
+FedTrustChain extends the consensus engine with **asynchronous UDP block broadcasting**, enabling multi-node network convergence:
+
+```
+┌──────────┐    ┌──────────┐    ┌──────────────┐
+│ Client A │    │ Client B │    │ Client C (Mal)│
+│ T=0.95   │    │ T=0.90   │    │ T=0.35        │
+│ Validator│    │ Listener │    │ Forged Block  │
+└────▲─────┘    └────▲─────┘    └──────▲───────┘
+     │               │                 │
+     │ send_model()  │ send_model()    │ broadcast_forged()
+     │──────────────>│────────────────>|
+                     │ FederatedServer │
+                     │ (UDP Server)    │
+                     │                 │
+                     │ ┌─────────────┐ │
+                     │ │TrustManager │ │
+                     │ │A: ACCEPTED  │ │
+                     │ │B: ACCEPTED  │ │
+                     │ │C: REJECTED  │ │
+                     │ └─────────────┘ │
+                     │                 │
+                     │ ProofOfWork.mine│ │
+                     │ ValidatorRegistry│
+                     │                 │
+                     │ <── broadcast_block_header() ──┐
+                     │         │          │           │
+                     │       UDP        UDP        UDP
+                     │────────|──────────|──────────>|
+                     │  verified     verified    REJECTED
+                     │             (invalid prev_hash)
+```
+
+**Sequence Flow:**
+1. Clients A & B train local models and send over chunked UDP to the server.
+2. Server evaluates via `DynamicTrustManager` — both pass trust threshold (T_i >= 0.50).
+3. `ValidatorRegistry.verify_proposer()` confirms authorization for both nodes.
+4. `ProofOfWork.mine_block()` creates a consensus block with both transactions.
+5. Server broadcasts the mined block header to all registered UDP client addresses.
+6. Client C (malicious) simultaneously broadcasts a forged block with invalid previous hash.
+7. All honest clients run `ChainValidator.validate_chain()` on received blocks:
+   - Legitimate blocks pass all three checks (PoW hash, difficulty, chain linkage).
+   - Forged block fails ChainLinkBreach check — rejected across all nodes.
+8. Honest nodes converge on identical block height and ledger state.
+
+**Network Resilience:**
+- Nodes can disconnect mid-chain and rejoin via broadcast sync.
+- Partial chains remain valid; full sync restores complete state.
+- Fork resolution always selects the longest valid chain. |
 
 ---
 
@@ -219,6 +270,7 @@ FedTrustChain/
 │   └── __init__.py
 ├── scripts/                     # Standalone execution scripts
 │   ├── benchmark_all.py         # Multi-dataset FL benchmark orchestrator
+│   ├── simulate_consensus_network.py  # Phase 3: 3-node P2P consensus simulation
 │   └── __init__.py
 ├── src/                         # Core application modules (importable package)
 │   ├── __init__.py
@@ -248,10 +300,12 @@ FedTrustChain/
 │   ├── test_dynamic_trust.py       # Dynamic trust scoring (7 tests)
 │   ├── test_loader.py              # Dataset loading & client partitioning (9 tests)
 │   ├── test_networking.py          # Chunked UDP client-server pipeline (2 tests)
+│   ├── test_p2p_consensus.py       # Phase 3 Step 2: P2P broadcasting, fork resolution, sync recovery (8 tests)
 │   └── test_simulation.py          # Full benchmark round on synthetic data (2 tests)
 ├── results/                     # Benchmark output artifacts (gitignored except JSON)
-│   ├── benchmark_summary.json   # Structured metrics per dataset run
-│   └── blockchain_audit_log.json# Phase 2+3: Chain state, block records, consensus metadata
+│   ├── benchmark_summary.json           # Structured metrics per dataset run
+│   ├── blockchain_audit_log.json        # Phase 2+3: Chain state, block records, consensus metadata
+│   └── consensus_simulation.json        # Phase 3 Step 2: P2P simulation results (convergence, latency)
 ├── .gitignore                   # Ignore patterns for data, models, venvs, logs
 ├── requirements.txt             # Pinned Python dependencies
 └── README.md                    # This file
@@ -541,6 +595,15 @@ The following enhancements are planned for the next development cycle:
   - `ValidatorRegistry`: Node authorization enforced via trust threshold T_i >= 0.50.
   - `ChainValidator`: Tamper detection (payload, linkage, nonce) + automatic fork resolution to longest valid chain.
 - Integrated into UDP aggregation server: trusted clients trigger consensus block mining per round.
+
+### 🌐 P2P Block Propagation **COMPLETED**
+
+- **Phase 3 Step 2:** Implemented multi-node asynchronous block broadcasting (`scripts/simulate_consensus_network.py`):
+  - Server broadcasts mined block headers to all registered client UDP sockets via `broadcast_block_header()`.
+  - Client nodes receive, parse, and verify blocks using `ChainValidator.validate_chain()` locally.
+  - Malicious peer detection: forged blocks with invalid previous hash links are rejected across all honest nodes.
+  - Network resilience: partial chains remain valid; rejoining nodes sync via broadcast stream.
+- Integration tests (`tests/test_p2p_consensus.py`): UDP broadcasting, race conditions, fork resolution, disconnect recovery.
 
 ### 📜 Smart Contract Model Verification
 

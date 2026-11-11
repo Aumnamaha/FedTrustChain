@@ -85,6 +85,8 @@ class FederatedServer:
         self.client_models: List[RandomForestClassifier] = []
         self._trust_scores: Dict[int, float] = defaultdict(lambda: 1.0)
         self._udp_socket: Optional[socket.socket] = None
+        # --- Phase 3 Step 2: P2P block broadcast tracking ---------------
+        self._client_addresses: Dict[int, Tuple[str, int]] = {}
 
     # ------------------------------------------------------------------
     def start(
@@ -231,6 +233,13 @@ class FederatedServer:
                                     mined["difficulty"],
                                     cid,
                                 )
+                                # --- Phase 3 Step 2: UDP broadcast to clients -----------
+                                if self._client_addresses:
+                                    reach = self.broadcast_block_header(mined)
+                                    self.logger.info(
+                                        "Block #%d broadcast — reached %d/%d clients",
+                                        mined["index"], reach, len(self._client_addresses),
+                                    )
                             else:
                                 self.logger.warning(
                                     "Consensus: node %d not authorized to propose block",
@@ -274,6 +283,14 @@ class FederatedServer:
             if self.ledger is not None:
                 mined_block = self.ledger.mine_pending_block()
                 audit_path = self.ledger.export_audit_log_json()
+                # --- Phase 3 Step 2: Broadcast ledger block to network ------
+                if self._client_addresses:
+                    reach = self.broadcast_block_header(
+                        {"index": mined_block.index, "hash": mined_block._hash or "",
+                         "nonce": mined_block.nonce, "difficulty": self.ledger.difficulty}
+                    )
+                    self.logger.info("Ledger block #%d broadcast — reached %d clients",
+                                     mined_block.index, reach)
                 summary = self.ledger.get_chain_summary()
                 self.logger.info(
                     "Blockchain: block #%d mined (nonce=%d, txns=%d) → %s",
@@ -401,6 +418,66 @@ class FederatedServer:
             )
 
             return model
+
+    # ------------------------------------------------------------------
+    def register_client_udp_address(self, client_id: int, addr: Tuple[str, int]) -> None:
+        """Register a client's UDP address for block broadcast dissemination.
+
+        Parameters
+        ----------
+        client_id : int
+            Identifier of the client node.
+        addr : tuple(str, int)
+            (host, port) pair where the client is listening for block broadcasts.
+        """
+        self._client_addresses[client_id] = addr
+
+    # ------------------------------------------------------------------
+    def broadcast_block_header(self, block: Dict[str, Any], target_port: Optional[int] = None) -> int:
+        """Broadcast a mined block header to all registered client UDP sockets.
+
+        Serializes the block as JSON and sends it via UDP datagram to every
+        registered client address. Also broadcasts on an optional multicast-like
+        port for passive listeners.
+
+        Parameters
+        ----------
+        block : dict
+            Mined block record (must contain index, hash, nonce, difficulty).
+        target_port : int | None, optional
+            Additional UDP port to broadcast on (for passive listeners).
+
+        Returns
+        -------
+        int
+            Number of clients successfully reached.
+        """
+        payload = json.dumps(block, default=str).encode("utf-8")
+        header = struct.pack("!I", block["index"])  # block index as 4-byte header
+        full_msg = header + payload
+
+        count = 0
+        for cid, (host, port) in self._client_addresses.items():
+            try:
+                self._udp_socket.sendto(full_msg, (host, port))
+                self.logger.info(
+                    "Broadcast block #%d → client %d (%s:%d)",
+                    block["index"], cid, host, port,
+                )
+                count += 1
+            except OSError as e:
+                self.logger.warning("Broadcast to client %d failed: %s", cid, e)
+
+        # Also broadcast on target_port if specified (for passive listeners)
+        if target_port is not None and target_port != self.port:
+            try:
+                self._udp_socket.sendto(full_msg, ("127.0.0.1", target_port))
+                count += 1
+                self.logger.info("Broadcast block #%d → listen port %d", block["index"], target_port)
+            except OSError as e:
+                self.logger.warning("Broadcast to listen port %d failed: %s", target_port, e)
+
+        return count
 
     @property
     def trust_scores(self) -> Dict[int, float]:
